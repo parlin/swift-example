@@ -1,4 +1,5 @@
 import SwiftUI
+import SFSafeSymbols
 
 extension Color {
     static let lkRed = Color("lkRed")
@@ -93,4 +94,16 @@ struct LKTextField: View {
 
         }.frame(maxWidth: .infinity)
     }
+}
+
+func bgView(systemSymbol: SFSymbol, geometry: GeometryProxy) -> some View {
+    Image(systemSymbol: systemSymbol)
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .foregroundColor(Color.lkGray2)
+        .frame(width: min(geometry.size.width, geometry.size.height) * 0.3)
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity
+        )
 }

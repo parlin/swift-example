@@ -1,9 +1,13 @@
 import SwiftUI
 import LiveKit
 import WebRTC
+import Combine
 
 // This class contains the logic to control behavior of the whole app.
 final class RoomContext: ObservableObject {
+
+    let jsonEncoder = JSONEncoder()
+    let jsonDecoder = JSONDecoder()
 
     private let store: ValueStore<Preferences>
 
@@ -12,7 +16,17 @@ final class RoomContext: ObservableObject {
     @Published var shouldShowDisconnectReason: Bool = false
     public var latestError: DisconnectReason?
 
-    public let room = ExampleObservableRoom()
+    @Published var showMessagesView: Bool = false
+    @Published var messages: [ExampleRoomMessage] = []
+    @Published var focusParticipant: Participant?
+    @Published var textFieldString: String = ""
+
+    @Published public var cameraTrackState: TrackPublishState = .notPublished()
+    @Published public var microphoneTrackState: TrackPublishState = .notPublished()
+    @Published public var screenShareTrackState: TrackPublishState = .notPublished()
+
+    // @ObservedObject
+    public var room = Room()
 
     @Published var url: String = "" {
         didSet { store.value.url = url }
@@ -48,9 +62,11 @@ final class RoomContext: ObservableObject {
         didSet { store.value.publishMode = publish }
     }
 
+    private var roomSubscription: AnyCancellable?
+
     public init(store: ValueStore<Preferences>) {
         self.store = store
-        room.room.add(delegate: self)
+        room.add(delegate: self)
 
         self.url = store.value.url
         self.token = store.value.token
@@ -64,6 +80,8 @@ final class RoomContext: ObservableObject {
         #if os(iOS)
         UIApplication.shared.isIdleTimerDisabled = true
         #endif
+
+        roomSubscription = room.objectWillChange.sink(receiveValue: objectWillChange.send)
     }
 
     deinit {
@@ -102,15 +120,150 @@ final class RoomContext: ObservableObject {
             reportStats: reportStats
         )
 
-        return try await room.room.connect(url,
-                                           token,
-                                           connectOptions: connectOptions,
-                                           roomOptions: roomOptions)
+        return try await room.connect(url,
+                                      token,
+                                      connectOptions: connectOptions,
+                                      roomOptions: roomOptions)
     }
 
     func disconnect() async throws {
-        try await room.room.disconnect()
+        try await room.disconnect()
     }
+
+    @MainActor
+    func unpublishAll() async throws {
+        guard let localParticipant = self.room.localParticipant else { return }
+        try await localParticipant.unpublishAll()
+        cameraTrackState = .notPublished()
+        microphoneTrackState = .notPublished()
+        screenShareTrackState = .notPublished()
+    }
+
+    @MainActor
+    func sendMessage() {
+
+        guard let localParticipant = room.localParticipant else {
+            print("LocalParticipant doesn't exist")
+            return
+        }
+
+        // Make sure the message is not empty
+        guard !textFieldString.isEmpty else { return }
+
+        let roomMessage = ExampleRoomMessage(messageId: UUID().uuidString,
+                                             senderSid: localParticipant.sid,
+                                             senderIdentity: localParticipant.identity,
+                                             text: textFieldString)
+        textFieldString = ""
+        messages.append(roomMessage)
+
+        do {
+            let json = try jsonEncoder.encode(roomMessage)
+
+            localParticipant.publishData(data: json).then {
+                print("did send data")
+            }.catch { error in
+                print("failed to send data \(error)")
+            }
+
+        } catch let error {
+            print("Failed to encode data \(error)")
+        }
+    }
+
+    @MainActor
+    public func switchCameraPosition() async throws {
+
+        guard case .published(let publication) = self.cameraTrackState,
+              let track = publication.track as? LocalVideoTrack,
+              let cameraCapturer = track.capturer as? CameraCapturer else {
+            throw TrackError.state(message: "Track or a CameraCapturer doesn't exist")
+        }
+
+        try await cameraCapturer.switchCameraPosition()
+    }
+
+    @MainActor
+    public func toggleCameraEnabled() async throws {
+
+        guard let localParticipant = room.localParticipant else { return }
+        guard !cameraTrackState.isBusy else { return }
+
+        cameraTrackState = .busy(isPublishing: !cameraTrackState.isPublished)
+
+        do {
+            let publication = try await localParticipant.setCamera(enabled: !localParticipant.isCameraEnabled())
+            guard let publication = publication else { return }
+            cameraTrackState = .published(publication)
+        } catch let error {
+            cameraTrackState = .notPublished(error: error)
+        }
+    }
+
+    @MainActor
+    public func toggleMicrophoneEnabled() async throws {
+
+        guard let localParticipant = room.localParticipant else { return }
+        guard !microphoneTrackState.isBusy else { return }
+
+        microphoneTrackState = .busy(isPublishing: !microphoneTrackState.isPublished)
+
+        do {
+            let publication = try await localParticipant.setMicrophone(enabled: !localParticipant.isMicrophoneEnabled())
+            guard let publication = publication else { return }
+            microphoneTrackState = .published(publication)
+        } catch let error {
+            microphoneTrackState = .notPublished(error: error)
+        }
+    }
+
+    @MainActor
+    public func toggleScreenShareEnabled() async throws {
+
+        guard let localParticipant = room.localParticipant else { return }
+        guard !screenShareTrackState.isBusy else { return }
+
+        screenShareTrackState = .busy(isPublishing: !screenShareTrackState.isPublished)
+
+        do {
+            let publication = try await localParticipant.setScreenShare(enabled: !localParticipant.isScreenShareEnabled())
+            guard let publication = publication else { return }
+            self.screenShareTrackState = .published(publication)
+        } catch let error {
+            screenShareTrackState = .notPublished(error: error)
+        }
+    }
+
+    #if os(macOS)
+    @MainActor
+    func toggleScreenShareEnabledMacOS(screenShareSource: MacOSScreenCaptureSource? = nil) async throws {
+
+        guard let localParticipant = room.localParticipant else { return }
+        guard !screenShareTrackState.isBusy else { return }
+
+        if case .published(let track) = screenShareTrackState {
+
+            screenShareTrackState = .busy(isPublishing: false)
+
+            try await localParticipant.unpublish(publication: track)
+            screenShareTrackState = .notPublished()
+        } else {
+
+            guard let source = screenShareSource else { return }
+
+            screenShareTrackState = .busy(isPublishing: true)
+
+            do {
+                let track = LocalVideoTrack.createMacOSScreenShareTrack(source: source)
+                let publication = try await localParticipant.publishVideo(track)
+                screenShareTrackState = .published(publication)
+
+            } catch let error {
+                screenShareTrackState = .notPublished(error: error)
+            }
+        }
+    }
+    #endif
 }
 
 extension RoomContext: RoomDelegate {
