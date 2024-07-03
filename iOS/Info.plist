@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>LiveKit Example</string>
+	<string>FlyView</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -39,7 +39,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>uses your camera for video chat</string>
+	<string>uses your camera for recording live events</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Keychain is used to store all preferences.</string>
 	<key>NSMicrophoneUsageDescription</key>
